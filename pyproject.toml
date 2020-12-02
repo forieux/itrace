@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "trace"
+version = "0.1.0"
+description = "A data structure for data processing algorithm"
+authors = ["François Orieux <orieux@l2s.centralesupelec.fr>"]
+license = "WTFPL"
+
+[tool.poetry.dependencies]
+python = "^3.8"
+numpy = "^1.19.4"
+h5py = "^3.1.0"
+
+[tool.poetry.dev-dependencies]
+ipython = "^7.19.0"
+mypy = "^0.790"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
