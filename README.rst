@@ -20,9 +20,7 @@ Contents
 ========
 
 trace.py
-    A module that implement the algorithm described in [2] for
-    unsupervised myopic image deconvolution. However the myopic part
-    is not actually available.
+    The main file that implements the ``Trace`` type.
 
 plot.py
     Tools to plot `Trace`.
