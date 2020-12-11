@@ -6,6 +6,8 @@ The Trace (``trace``) package provides a data structure to help prototyping data
 processing algorithm. The main contribution is the ``Trace`` type that mimic a
 ``list`` with additionnal features.
 
+The package is in very alpha stage.
+
 Info
 ====
 
@@ -22,28 +24,25 @@ trace.py
     unsupervised myopic image deconvolution. However the myopic part
     is not actually available.
 
+plot.py
+    Tools to plot `Trace`.
+
+iter.py
+    Tools for iterative algorithm. I'm not sure your interested about that.
+
+
 Requirements
 ============
 
-This package depends on numpy
+This package depends on numpy, h5py, matlotlib and tqdm.
 
-* Numpy version >= 1.4.1
 
 Installation
 ============
 
-The ``pip`` version::
+After git clonning, I recommand to use poetry ::
 
-    pip install edwin
-
-If you have not ``pip``, download the archive, decompress it and to
-install in your user path, run in a command line::
-
-    python setup.py install --user
-
-or for the system path, run as root::
-
-    python setup.py install
+    poetry install
 
 Development
 ===========
