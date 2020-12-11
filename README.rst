@@ -11,10 +11,10 @@ The package is in very alpha stage.
 Info
 ====
 
-* Author: François Orieux
+* Author: `François Orieux <http://pro.orieux.fr>`_
 * Contact: orieux at l2s.centralesupelec.fr
 * Project homepage: http://github.com/forieux/trace
-* Downloads page: https://github.com/forieux/releases
+* Downloads page: https://github.com/forieux/trace/releases
 
 Contents
 ========
@@ -34,7 +34,7 @@ iter.py
 Requirements
 ============
 
-This package depends on numpy, h5py, matlotlib and tqdm.
+This package depends on `numpy <https://numpy.org/>`_, `h5py <https://www.h5py.org>`_, `matlotlib <https://matplotlib.org/>`_, and `tqdm <https://github.com/tqdm/tqdm>`_.
 
 
 Installation
