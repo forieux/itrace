@@ -34,8 +34,6 @@ import time
 import warnings
 
 import h5py
-import matplotlib.cm as cm
-import matplotlib.pyplot as plt
 import numpy as np
 
 try:
@@ -49,16 +47,16 @@ except ImportError:
     pass
 else:
     if not notify2.initted:
-        notify2.init("Edwin iterative")
+        notify2.init("Trace active")
 
 __author__ = "François Orieux"
-__copyright__ = "2018 F. Orieux <orieux@l2s.centralesupelec.fr>"
+__copyright__ = "2018-2020 F. Orieux <orieux@l2s.centralesupelec.fr>"
 __credits__ = ["François Orieux"]
 __license__ = "mit"
 __version__ = "0.1.0"
 __maintainer__ = "François Orieux"
 __email__ = "orieux@l2s.centralesupelec.fr"
-__status__ = "development"
+__status__ = "early alpha"
 __url__ = ""
 __keywords__ = "tools, algorithmes"
 
@@ -67,17 +65,18 @@ __keywords__ = "tools, algorithmes"
 class Trace(collections.abc.Sequence):
     """The main data type of the Package"""
 
-    def __init__(self, init=None, name="", backend=None, axe=None):
+    def __init__(self, init=None, name="", backend=None):
         self.name = name
-        self.axe = axe
         self.timestamp = [time.time()]
         if backend is None:
             self.backend = ListBackend(init=init)
+        self._observers = []
 
-    # @property
-    # def burned(self) -> bool:
-    #     """Return true if `len(self) > burnin`"""
-    #     return True if len(self) > self.burnin else False
+    def append(self, value):
+        """Append the value at the end of the trace."""
+        self.backend.append(value)
+        for obs in self._observers:
+            obs.update()
 
     @property
     def last(self):
@@ -96,10 +95,6 @@ class Trace(collections.abc.Sequence):
         self.backend.append(value)
         self.timestamp.append(time.time())
 
-    def append(self, value):
-        """Append the value at the end of the trace."""
-        self.backend.append(value)
-
     def __ilshift__(self, value):
         """Use <<= as a affectation or Trace ← ('gets') meaning"""
         self.backend.append(value)
@@ -108,8 +103,10 @@ class Trace(collections.abc.Sequence):
     @property
     def time(self):
         """Return effective time of controlled iteration"""
-        arr = np.array(self.timestamp) - self.timestamp[0]
-        return arr - np.cumsum(self.feedbacks_duration)
+        return np.array(self.timestamp) - self.timestamp[0]
+
+    def register(self, obs):
+        self._observers.append(obs)
 
     #%% Arithmetic
     def __pos__(self):
@@ -181,195 +178,102 @@ class Trace(collections.abc.Sequence):
     def __rpow__(self, value):
         return pow(value, self.last)
 
-    def sum(self, burnin=0):
-        """Return the sum of the trace, starting from `burnin`."""
-        return self.backend.sum(burnin)
-        if burnin is None:
-            return np.sum(self._hist[self.burnin :], axis=0)
-        else:
-            return np.sum(self._hist[burnin:], axis=0)
+    def sum(self, start=0):
+        """Return the sum of the trace, starting from `start`."""
+        return self.backend.sum(start)
 
-    def mean(self, burnin=None):
-        """Return the mean of the trace, starting from `burnin`."""
-        start = self.burnin if burnin is None else burnin
-        if len(self) > start:
-            return np.mean(self._hist[start:], axis=0)
-        else:
-            return np.array([])
+    def mean(self, start=0):
+        """Return the mean of the trace, starting from `start`."""
+        return self.backend.mean(start)
 
-    def std(self, burnin=None):
-        """Return the standard deviation of the trace, starting from `burnin`."""
-        start = self.burnin if burnin is None else burnin
-        if len(self) > start:
-            return np.std(self._hist[start:], axis=0)
-        else:
-            return np.array([])
+    def var(self, start=0):
+        """Return the element wise variance of the trace, starting from `start`."""
+        return self.backend.var(start)
 
-    def cum_mean(self, burnin=None):
-        """Return the cumulative mean of the trace, starting from `burnin`."""
-        start = self.burnin if burnin is None else burnin
-        if len(self) > start:
-            return np.cumsum(self._hist[start:]) / (
-                np.arange(len(self._hist[start:])) + 1
-            )
-        else:
-            return np.array([])
-
-    def mov_std(self, burnin=None):
-        """Return the moving standard deviation std of the trace, starting from `burnin`."""
-        start = self.burnin if burnin is None else burnin
-        if len(self) > start:
-            samples = self._hist[start:]
-            cum_mean = self.cum_mean(start)
-            return np.sqrt(
-                np.cumsum(samples ** 2) / (np.arange(len(samples)) + 1) - cum_mean ** 2
-            )
-        else:
-            return np.array([])
+    def std(self, start=0):
+        """Return the element wise standard deviation of the trace, starting from
+        `start`."""
+        return self.backend.std(start)
 
     @property
     def delta(self):
         """Return |self[-2] - self[-1]|^2 / |self[-1]|^2 if defined, else ∞."""
-        if self._hist is None:
-            return np.inf
-        elif len(self._hist) >= 2:
-            return np.sum((self._hist[-1] - self._hist[-2]) ** 2) / np.sum(
-                self._hist[-1] ** 2
-            )
-        else:
-            return np.inf
-
-    @property
-    def mean_delta(self):
-        """Variation of mean
-        If
-        μ_N = s_N / N,  with s_N = ∑_i x_i
-        then
-        μ_N - μ_(N-1) = (1/N - 1/(N-1))s_N + 1/(N-1) x_N
-
-        Variation is |μ_N - μ_(N-1)|^2 / |μ_N|^2
-        """
-        if len(self) > self.burnin + 1:
-            num = len(self) - self.burnin
-            diff = (1 / num - 1 / (num - 1)) * self.sum() + self.last / (num - 1)
-            return np.sum(diff ** 2) / np.sum(self.mean() ** 2)
-        else:
-            return np.nan
-
-    @property
-    def std_delta(self):
-        """Return |σ_N - σ_(N-1)|^2 / |σ_N|^2"""
-        if len(self) > self.burnin + 1:
-            last_std = np.std(self._hist[self.burnin :], axis=0)
-            prev_std = np.std(self._hist[self.burnin : -2], axis=0)
-            return np.sum(np.abs(last_std - prev_std) ** 2) / np.sum(
-                np.abs(last_std) ** 2
-            )
-        else:
-            return np.nan
+        return self.backend.delta
 
     @property
     def shape(self):
         """Return the shape of values"""
-        return self._hist.shape[1:]
+        return self.backend.last.shape
 
     @property
     def ndim(self):
         """Return the ndim of values"""
-        return len(self.shape)
+        return len(self.backend.last.shape)
 
     @property
     def full_shape(self):
         """Return the shape of the trace"""
-        return self._hist.shape
+        return (len(self),) + self.shape
 
     @property
     def size(self):
         """Return the size of values"""
-        return np.prod(self._hist.shape[1:])
+        return np.prod(self.backend.last.shape)
 
     def __len__(self):
         """Return the length of the trace"""
-        return len(self._hist)
+        return len(self.backend)
 
     def __getitem__(self, key):
-        if key not in range(-len(self), len(self)):
-            raise IndexError
-        else:
-            return self._hist[key]
-
-    def export(self, path, name):
-        """Save the trace as NDArray in a h5py file"""
-        h5f = h5py.File(path)
-        h5f.create_dataset(name, data=np.asarray(self._hist))
-        h5f.close()
+        return self.backend[key]
 
     def __repr__(self):
-        return "{} ({}) / length: {} [burn-in: {}] × shape: {}".format(
-            self.name, type(self).__name__, len(self), self.burnin, self.shape
+        return "{} ({}) / length: {} × shape: {}".format(
+            self.name, type(self).__name__, len(self), self.shape
         )
 
 
-class FileTrace(Trace):
-    def __init__(self, burnin=1, init=None, maxitem=5000, name=""):
-        super().__init__(burnin=burnin, name=name)
-        self._temp_file = tempfile.NamedTemporaryFile()
-        self._h5file = h5py.File(self._temp_file.name)
-        self.maxitem = maxitem
-        if init is None:
-            self._hist = None
-        else:
-            init = np.asarray(init)
-            self._hist = self._h5file.create_dataset(
-                "trace", data=init[np.newaxis], maxshape=(maxitem,) + init.shape
-            )
+class StochTrace(Trace):
+    """Stochastic version of Trace"""
 
-    @Trace.last.setter
-    def last(self, value):
-        if self._hist is None:
-            self._hist = self._h5file.create_dataset(
-                "trace", data=value[np.newaxis], maxshape=(self.maxitem,) + value.shape
-            )
-        else:
-            self._hist.resize(len(self._hist) + 1, axis=0)
-            self._hist[-1] = np.asarray(value)[np.newaxis]
-
-    def __del__(self):
-        self._h5file.close()
-
-
-class HollowTrace(Trace):
-    def __init__(self, burnin=1, init=None, name=""):
-        super().__init__(burnin=burnin, name=name)
+    def __init__(self, burnin=0, init=None, name="", backend=None):
+        super().__init__(init=init, name=name, backend=backend)
+        self.burnin = burnin
 
     @property
     def burned(self):
-        return True if len(self) > self.burnin else False
-
-    @property
-    def last(self):
-        return self._val
-
-    @property
-    def shape(self):
-        return self._val.shape
-
-    @property
-    def size(self):
-        return np.prod(self._val.shape)
-
-    def __len__(self):
-        return self.count
-
-    def __getitem__(self, key):
-        if key not in range(len(self)):
-            raise IndexError
+        """Return `True` is the length of the Trace is higher than `burnin` attribut."""
+        if len(self) >= self.burnin:
+            return True
         else:
-            return self._val
+            return False
 
+    def sum(self, start=None):
+        """Return the sum of the trace, starting from `start`."""
+        return self.backend.sum(start if start is not None else self.burnin)
 
-class StochHollowTrace(StochTrace):
-    pass
+    def mean(self, start=None):
+        """Return the mean of the trace, starting from `start`."""
+        return self.backend.mean(start if start is not None else self.burnin)
+
+    def var(self, start=None):
+        """Return the element wise variance of the trace, starting from `start`."""
+        return self.backend.var(start if start is not None else self.burnin)
+
+    def std(self, start=None):
+        """Return the element wise standard deviation of the trace, starting from
+        `start`."""
+        return self.backend.std(start if start is not None else self.burnin)
+
+    def __repr__(self):
+        return "{} ({}) / length: {} [burn-in: {} {}] × shape: {}".format(
+            self.name,
+            type(self).__name__,
+            len(self),
+            self.burnin,
+            "✓" if self.burned else "⍻",
+            self.shape,
+        )
 
 
 class Backend(collections.abc.Sequence):
@@ -412,6 +316,20 @@ class Backend(collections.abc.Sequence):
         """Return the standard deviation of values"""
         return NotImplemented
 
+    def asarray(self):
+        """Return the values as numpy array"""
+        return np.array([val[np.newaxis] for val in self])
+
+    def as_hdf5_dataset(self, dataset):
+        """Return the values as numpy array"""
+        dataset = self.asarray()
+
+    def as_hdf5_file(self, filename):
+        """Return the values as numpy array"""
+        h5file = h5py.File(filename)
+        h5file.create_dataset("values", data=self.asarray())
+        return h5file
+
     @property
     def delta(self):
         """Return |self[-2] - self[-1]|^2 / |self[-1]|^2 if defined, else ∞."""
@@ -422,6 +340,8 @@ class Backend(collections.abc.Sequence):
 
 
 class ListBackend(Backend):  # pylint: disable=too-many-ancestors
+    """A Backend that use python list for storage"""
+
     def __init__(self, init=None):
         """Initialise the backend.
 
@@ -466,7 +386,9 @@ class ListBackend(Backend):  # pylint: disable=too-many-ancestors
         return self._storage[key]
 
 
-class NPYBackend(Backend):
+class NPYBackend(Backend):  # pylint: disable=too-many-ancestors
+    """A Backend that use numpy array for storage"""
+
     def __init__(self, maxitem: int, init=None):
         """Initialise the backend.
 
@@ -482,12 +404,6 @@ class NPYBackend(Backend):
             self.length = 1
 
     def append(self, value):
-        """Append a value at the end.
-
-        Only the last value is stored. Therefor, the method updated internal
-        variables for sum, ...
-
-        """
         self._storage[self.length] = value
         self.length += 1
 
@@ -514,7 +430,9 @@ class NPYBackend(Backend):
         return self._storage[key]
 
 
-class H5PYBackend(NPYBackend):
+class H5PYBackend(NPYBackend):  # pylint: disable=too-many-ancestors
+    """A Backend that use a hdf5 file for storage"""
+
     def __init__(
         self,
         maxitem: int,
@@ -541,7 +459,7 @@ class H5PYBackend(NPYBackend):
             self.length = 1
 
 
-class HollowBackend(Backend):
+class HollowBackend(Backend):  # pylint: disable=too-many-ancestors
     """An Hollow backend that does not store all values
 
     The backend does not store all the appended values but only the last one. It
@@ -629,168 +547,6 @@ class HollowBackend(Backend):
             raise IndexError
         else:
             return self._val
-
-
-#%% Traces plotter
-class MplScalarTracePlot:
-    def __init__(self, axe, name=""):
-        self.axe = axe
-        self.fig = self.axe.figure
-        self.name = name
-
-        axe.set_title("{}".format(self.name))
-        axe.set_xlabel("Iteration")
-
-    def update(self, trace):
-        if not hasattr(self, "line"):
-            (self.line,) = self.axe.plot(trace)
-        else:
-            self.line.set_ydata(trace)
-            self.line.set_xdata(np.arange(len(trace)))
-        self.axe.set_title("{}: {:.2g}".format(self.name, trace.last))
-        self.axe.set_xlim(0, max(len(trace), trace.burnin + 10))
-        # self.axe.set_ylim(0.9 * min(trace) - 0.1, 1.1 * max(trace) + 0.1)
-        self.axe.set_ylim(0.9 * min(trace), 1.1 * max(trace))
-
-    def update_stoch(self, trace):
-        if not hasattr(self, "burnin_line"):
-            self.burnin_line = self.axe.axvline(trace.burnin, ls="--", alpha=0.2)
-
-        if trace.burned:
-            if hasattr(self, "mean_line"):
-                self.mean_line.set_ydata(trace.cum_mean())
-                self.mean_line.set_xdata(
-                    np.arange(len(trace.cum_mean())) + trace.burnin
-                )
-                self.noise_fill.remove()
-            else:
-                (self.mean_line,) = self.axe.plot(trace.cum_mean(), color="red", lw=2)
-            self.noise_fill = self.axe.fill_between(
-                np.arange(trace.burnin, len(trace)),
-                trace.cum_mean() - trace.cum_std(),
-                trace.cum_mean() + trace.cum_std(),
-                facecolor="blue",
-                alpha=0.2,
-            )
-
-            self.axe.set_title(
-                "{}: {:.2g} / {:.2g} +- {:.2g}".format(
-                    self.name, trace.last, trace.mean(), trace.std()
-                )
-            )
-        else:
-            self.axe.set_title("{}: {:.2g}".format(self.name, trace.last))
-
-
-class Mpl1DTracePlot:
-    def __init__(self, axe, name=""):
-        self.axe = axe
-        self.fig = self.axe.figure
-        self.name = name
-
-        self.axe.set_title("{}".format(self.name))
-        self.axe.set_xlabel("'t'")
-
-    def update(self, trace):
-        if not hasattr(self, "line"):
-            (self.line,) = self.axe.plot(trace.last)
-        else:
-            self.line.set_ydata(trace.last)
-            self.line.set_xdata(np.arange(len(trace.last)))
-        self.axe.set_ylim(1.1 * min(trace.last), 1.1 * max(trace.last))
-        self.axe.set_title("{} / Δ: {:.1g}".format(self.name, trace.delta))
-        self.axe.set_xlabel("'t'")
-
-    def update_stoch(self, trace):
-        if trace.burned:
-            if hasattr(self, "mean_line"):
-                self.mean_line.set_ydata(trace.mean())
-                self.noise_fill.remove()
-            else:
-                (self.mean_line,) = self.axe.plot(trace.mean(), color="red", alpha=1)
-            self.noise_fill = self.axe.fill_between(
-                np.arange(len(trace.last)),
-                trace.mean() - trace.std(),
-                trace.mean() + trace.std(),
-                facecolor="blue",
-                alpha=0.2,
-            )
-            self.axe.set_ylim(1.1 * min(trace.mean()), 1.1 * max(trace.mean())),
-            # self.axe.set_ylim(min(1.1 * min(trace.mean()),
-            #                       self.axe.get_ylim()[0]),
-            #                   max(1.1 * max(trace.mean()),
-            #                       self.axe.get_ylim()[1]))
-        self.axe.set_title(
-            "{} / Δμ: {:.1g} / Δσ: {:.1g}".format(
-                self.name, trace.mean_delta, trace.std_delta
-            )
-        )
-        self.axe.set_xlabel("'t'")
-
-
-class Mpl2DTracePlot:
-    def __init__(self, axe, name=""):
-        self.axe = axe
-        self.fig = self.axe.figure
-        self.name = name
-
-        self.axe.set_title("{}".format(self.name))
-        self.axe.set_xlabel("'t'")
-
-    def update(self, trace):
-        if not hasattr(self, "im"):
-            self.im = self.axe.imshow(abs(trace.last), cmap=cm.gray)
-            self.axe.set_axis_off()
-        else:
-            self.im.set_data(abs(trace.last))
-            self.im.autoscale()
-        self.axe.set_title("{} / Δ: {:.1g}".format(self.name, trace.delta))
-
-    def update_stoch(self, trace):
-        if trace.burned:
-            mean = abs(trace.mean())
-            # std = abs(trace.std())
-            self.im.set_data(
-                # np.concatenate((mean, std / np.max(std) * np.max(mean)), axis=1)
-                mean
-            )
-            self.axe.set_aspect("auto")
-            self.im.autoscale()
-        self.axe.set_title(
-            "{} / Δμ: {:.1g} / Δσ: {:.1g}".format(
-                self.name, trace.mean_delta, trace.std_delta
-            )
-        )
-
-
-class Mpl2DTraceLogPlot:
-    def __init__(self, axe, name=""):
-        self.axe = axe
-        self.fig = self.axe.figure
-        self.name = name
-
-        self.axe.set_title("{}".format(self.name))
-        self.axe.set_xlabel("'t'")
-
-    def update(self, trace):
-        if not hasattr(self, "im"):
-            self.im = self.axe.imshow(np.log(trace.last), cmap=cm.gray)
-            plt.axis("off")
-        else:
-            self.im.set_data(np.log(trace.last))
-        self.axe.set_title("{} / Δ: {:.1g}".format(self.name, trace.delta))
-
-    def update_stoch(self, trace):
-        if trace.burned:
-            self.im.set_data(
-                np.concatenate((np.log(trace.mean()), trace.std()), axis=1)
-            )
-            self.axe.set_aspect("auto")
-        self.axe.set_title(
-            "{} / Δμ: {:.1g} / Δσ: {:.1g}".format(
-                self.name, trace.mean_delta, trace.std_delta
-            )
-        )
 
 
 #%% Feedbacks
