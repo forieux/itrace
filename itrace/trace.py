@@ -30,8 +30,8 @@ import collections
 import functools
 import math
 import tempfile
-import time
 import warnings
+from time import process_time
 
 import h5py
 import numpy as np
@@ -49,17 +49,6 @@ else:
     if not notify2.initted:
         notify2.init("Trace active")
 
-__author__ = "François Orieux"
-__copyright__ = "2018-2020 F. Orieux <orieux@l2s.centralesupelec.fr>"
-__credits__ = ["François Orieux"]
-__license__ = "mit"
-__version__ = "0.1.0"
-__maintainer__ = "François Orieux"
-__email__ = "orieux@l2s.centralesupelec.fr"
-__status__ = "early alpha"
-__url__ = ""
-__keywords__ = "tools, algorithmes"
-
 
 #%% Traces
 class Trace(collections.abc.Sequence):
@@ -67,7 +56,7 @@ class Trace(collections.abc.Sequence):
 
     def __init__(self, init=None, name="", backend=None):
         self.name = name
-        self.timestamp = [time.time()]
+        self.timestamp = [process_time()]
         if backend is None:
             self.backend = ListBackend(init=init)
         self._observers = []
@@ -76,7 +65,7 @@ class Trace(collections.abc.Sequence):
         """Append the value at the end of the trace."""
         self.backend.append(value)
         for obs in self._observers:
-            obs.update()
+            obs.update(self)
 
     @property
     def last(self):
@@ -88,12 +77,8 @@ class Trace(collections.abc.Sequence):
 
     @last.setter
     def last(self, value):
-        """Add an value at the end of the trace. Equivalent to the append method of the
-        list type.
-
-        """
         self.backend.append(value)
-        self.timestamp.append(time.time())
+        self.timestamp.append(process_time())
 
     def __ilshift__(self, value):
         """Use <<= as a affectation or Trace ← ('gets') meaning"""
@@ -102,7 +87,6 @@ class Trace(collections.abc.Sequence):
 
     @property
     def time(self):
-        """Return effective time of controlled iteration"""
         return np.array(self.timestamp) - self.timestamp[0]
 
     def register(self, obs):
@@ -197,27 +181,22 @@ class Trace(collections.abc.Sequence):
 
     @property
     def delta(self):
-        """Return |self[-2] - self[-1]|^2 / |self[-1]|^2 if defined, else ∞."""
         return self.backend.delta
 
     @property
     def shape(self):
-        """Return the shape of values"""
         return self.backend.last.shape
 
     @property
     def ndim(self):
-        """Return the ndim of values"""
         return len(self.backend.last.shape)
 
     @property
     def full_shape(self):
-        """Return the shape of the trace"""
         return (len(self),) + self.shape
 
     @property
     def size(self):
-        """Return the size of values"""
         return np.prod(self.backend.last.shape)
 
     def __len__(self):
@@ -318,7 +297,7 @@ class Backend(collections.abc.Sequence):
 
     def asarray(self):
         """Return the values as numpy array"""
-        return np.array([val[np.newaxis] for val in self])
+        return np.array([val[np.newaxis, ...] for val in self])
 
     def as_hdf5_dataset(self, dataset):
         """Return the values as numpy array"""
@@ -701,7 +680,7 @@ class Looper(collections.abc.Iterator):
         self.status = 2
         self.message = "Running"
         self.succes = False
-        self.timestamp = [time.time()]
+        self.timestamp = [process_time()]
         self.feedbacks_duration = [0]
         for feedback in self.feedbacks:
             feedback.init()
@@ -718,14 +697,14 @@ class Looper(collections.abc.Iterator):
             raise StopIteration()
         elif self.nit < self.max_iter:
             if not self.speedrun:
-                tic = time.time()
+                tic = process_time()
                 for feedback in self.feedbacks:
                     feedback.show(self.nit, self.min_iter, self.max_iter)
-                self.feedbacks_duration.append(time.time() - tic)
+                self.feedbacks_duration.append(process_time() - tic)
             else:
                 self.feedbacks_duration.append(0)
 
-            self.timestamp.append(time.time())
+            self.timestamp.append(process_time())
             self.nit += 1
             return self.nit
         else:

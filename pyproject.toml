@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "trace"
+name = "itrace"
 version = "0.1.0"
 description = "A data structure for data processing algorithm"
 authors = ["François Orieux <orieux@l2s.centralesupelec.fr>"]
