@@ -2,9 +2,9 @@
 Trace
 =========================
 
-The Trace (``trace``) package provides a data structure to help prototyping data
-processing algorithm. The main contribution is the ``Trace`` type that mimic a
-``list`` with additionnal features.
+The iTrace (``itrace``) package provides a data structure to help prototyping
+data processing algorithm. The main contribution is the ``Trace`` type that
+mimic a ``list`` with additionnal features.
 
 The package is in very alpha stage.
 
@@ -13,8 +13,8 @@ Info
 
 * Author: `François Orieux <http://pro.orieux.fr>`_
 * Contact: orieux at l2s.centralesupelec.fr
-* Project homepage: http://github.com/forieux/trace
-* Downloads page: https://github.com/forieux/trace/releases
+* Project homepage: http://github.com/forieux/itrace
+* Downloads page: https://github.com/forieux/itrace/releases
 
 Contents
 ========
@@ -54,4 +54,4 @@ The ongoing development depends on my time but is open. I try to fix bugs.
 License
 =======
 
-``trace`` is free software distributed under the WTFPL, see LICENSE.txt.
+``itrace`` is free software distributed under the WTFPL, see LICENSE.txt.
