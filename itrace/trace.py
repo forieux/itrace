@@ -27,7 +27,6 @@ from __future__ import division  # Then 10/3 provide 3.3333 instead of 3
 
 import abc
 import collections
-import functools
 import math
 import tempfile
 import warnings
@@ -35,10 +34,11 @@ from time import process_time
 
 import h5py
 import numpy as np
+from varname import VarnameRetrievingError, varname
 
 try:
     import tqdm
-except:
+except ImportError:
     pass
 
 try:
@@ -54,21 +54,33 @@ else:
 class Trace(collections.abc.Sequence):
     """The main data type of the Package"""
 
-    def __init__(self, init=None, name="", backend=None):
-        self.name = name
-        self.timestamp = [process_time()]
-        if backend is None:
+    def __init__(self, init=None, name=None, backend=None):
+        if name is None:
+            try:
+                self.name = varname()
+            except VarnameRetrievingError:
+                self.name = ""
+        else:
+            self.name = name
+
+        if backend is not None:
+            self.backend = backend
+            self.backend.append(init)
+        else:
             self.backend = ListBackend(init=init)
+
         self._observers = []
+        self.timestamp = []
 
     def append(self, value):
         """Append the value at the end of the trace."""
         self.backend.append(value)
+        self.timestamp.append(process_time())
         for obs in self._observers:
             obs.update(self)
 
     @property
-    def last(self):
+    def last(self) -> np.ndarray:
         """Return the last element of the trace. Equivalent to self[-1]. If the trace is
         empty, return `None`.
 
@@ -77,19 +89,31 @@ class Trace(collections.abc.Sequence):
 
     @last.setter
     def last(self, value):
-        self.backend.append(value)
-        self.timestamp.append(process_time())
+        self.append(value)
+
+    def asarray(self):
+        return self.backend.asarray()
 
     def __ilshift__(self, value):
-        """Use <<= as a affectation or Trace ← ('gets') meaning"""
-        self.backend.append(value)
+        """Use <<= as a affectation (like ← or 'gets')."""
+        self.append(value)
         return self
+
+    def __array__(self, dtype=None):
+        if dtype is None:
+            return self.backend.last
+        return self.backend.last.astype(dtype)
+
+    def __float__(self):
+        return float(self.last)
 
     @property
     def time(self):
+        """Return the total time passed to fill the trace"""
         return np.array(self.timestamp) - self.timestamp[0]
 
     def register(self, obs):
+        """Register an observer to the Trace."""
         self._observers.append(obs)
 
     #%% Arithmetic
@@ -185,19 +209,25 @@ class Trace(collections.abc.Sequence):
 
     @property
     def shape(self):
-        return self.backend.last.shape
+        if len(self) > 0:
+            return self.backend.last.shape
+        return None
 
     @property
     def ndim(self):
-        return len(self.backend.last.shape)
+        return len(self.shape)
 
     @property
-    def full_shape(self):
+    def tshape(self):
         return (len(self),) + self.shape
 
     @property
     def size(self):
-        return np.prod(self.backend.last.shape)
+        return np.prod(self.shape)
+
+    @property
+    def tsize(self):
+        return np.prod(self.tshape)
 
     def __len__(self):
         """Return the length of the trace"""
@@ -207,16 +237,19 @@ class Trace(collections.abc.Sequence):
         return self.backend[key]
 
     def __repr__(self):
-        return "{} ({}) / length: {} × shape: {}".format(
-            self.name, type(self).__name__, len(self), self.shape
+        return (
+            f"{self.name} ({type(self).__name__}, {type(self.backend).__name__})"
+            f" / {len(self)}"
+            f" × {self.shape}\n"
+            f"{self.last.__repr__()}"
         )
 
 
 class StochTrace(Trace):
     """Stochastic version of Trace"""
 
-    def __init__(self, burnin=0, init=None, name="", backend=None):
-        super().__init__(init=init, name=name, backend=backend)
+    def __init__(self, init=None, burnin=0, backend=None, name=None):
+        super().__init__(init=init, backend=backend, name=name)
         self.burnin = burnin
 
     @property
@@ -224,8 +257,7 @@ class StochTrace(Trace):
         """Return `True` is the length of the Trace is higher than `burnin` attribut."""
         if len(self) >= self.burnin:
             return True
-        else:
-            return False
+        return False
 
     def sum(self, start=None):
         """Return the sum of the trace, starting from `start`."""
@@ -245,13 +277,12 @@ class StochTrace(Trace):
         return self.backend.std(start if start is not None else self.burnin)
 
     def __repr__(self):
-        return "{} ({}) / length: {} [burn-in: {} {}] × shape: {}".format(
-            self.name,
-            type(self).__name__,
-            len(self),
-            self.burnin,
-            "✓" if self.burned else "⍻",
-            self.shape,
+        return (
+            f"{self.name} ({type(self).__name__})"
+            f" / length: {len(self)} "
+            f"[burn-in: {self.burnin} {'✓' if self.burned else '⍻'}]"
+            f" × shape: {self.shape}"
+            f"{self.last.__repr__()}"
         )
 
 
@@ -299,9 +330,12 @@ class Backend(collections.abc.Sequence):
         """Return the values as numpy array"""
         return np.array([val[np.newaxis, ...] for val in self])
 
-    def as_hdf5_dataset(self, dataset):
+    def __array__(self, dtype=None):
+        return self.asarray().astype(dtype)
+
+    def fill_hdf5_dataset(self, dataset):
         """Return the values as numpy array"""
-        dataset = self.asarray()
+        dataset[:] = self.asarray()
 
     def as_hdf5_file(self, filename):
         """Return the values as numpy array"""
@@ -314,11 +348,10 @@ class Backend(collections.abc.Sequence):
         """Return |self[-2] - self[-1]|^2 / |self[-1]|^2 if defined, else ∞."""
         if len(self) >= 2:
             return np.sum((self[-1] - self[-2]) ** 2) / np.sum(self[-1] ** 2)
-        else:
-            return np.inf
+        return np.inf
 
 
-class ListBackend(Backend):  # pylint: disable=too-many-ancestors
+class ListBackend(Backend):
     """A Backend that use python list for storage"""
 
     def __init__(self, init=None):
@@ -342,7 +375,9 @@ class ListBackend(Backend):  # pylint: disable=too-many-ancestors
 
     @property
     def last(self):
-        return self._storage[-1]
+        if len(self) > 0:
+            return self._storage[-1]
+        return None
 
     def sum(self, sum_start=0):
         return sum(self._storage[sum_start:])
@@ -364,8 +399,11 @@ class ListBackend(Backend):  # pylint: disable=too-many-ancestors
     def __getitem__(self, key):
         return self._storage[key]
 
+    def asarray(self):
+        return np.array(self._storage)
 
-class NPYBackend(Backend):  # pylint: disable=too-many-ancestors
+
+class NPYBackend(Backend):
     """A Backend that use numpy array for storage"""
 
     def __init__(self, maxitem: int, init=None):
@@ -408,8 +446,11 @@ class NPYBackend(Backend):  # pylint: disable=too-many-ancestors
     def __getitem__(self, key):
         return self._storage[key]
 
+    def asarray(self):
+        return self._storage[: len(self)]
 
-class H5PYBackend(NPYBackend):  # pylint: disable=too-many-ancestors
+
+class H5PYBackend(NPYBackend):
     """A Backend that use a hdf5 file for storage"""
 
     def __init__(
@@ -437,8 +478,11 @@ class H5PYBackend(NPYBackend):  # pylint: disable=too-many-ancestors
             self._storage[0] = np.asarray(init)
             self.length = 1
 
+    def asarray(self):
+        return self._storage[: len(self)]
 
-class HollowBackend(Backend):  # pylint: disable=too-many-ancestors
+
+class HollowBackend(Backend):
     """An Hollow backend that does not store all values
 
     The backend does not store all the appended values but only the last one. It
@@ -473,8 +517,8 @@ class HollowBackend(Backend):  # pylint: disable=too-many-ancestors
             self._sum2 = self._val ** 2
             self.sum_count = 1
         else:
-            self._sum = np.zeros_like(init)
-            self._sum2 = np.zeros_like(init)
+            self._sum = 0
+            self._sum2 = 0
             self.sum_count = 0
 
         self._delta = np.inf
@@ -490,8 +534,8 @@ class HollowBackend(Backend):  # pylint: disable=too-many-ancestors
 
         if self.length >= self.sum_start:
             self.sum_count += 1
-            self._sum = self._sum + self._val
-            self._sum2 = self._sum2 + self._val ** 2
+            self._sum += self._val
+            self._sum2 += self._val ** 2
 
         if self._val is not None and (denom := np.sum(self._val ** 2)) != 0:
             self._delta = np.sum((self._val - value) ** 2) / denom
@@ -502,16 +546,16 @@ class HollowBackend(Backend):  # pylint: disable=too-many-ancestors
     def last(self):
         return self._val
 
-    def sum(self):
+    def sum(self, sum_start=0):
         return self._sum
 
-    def mean(self):
+    def mean(self, sum_start=0):
         return self._sum / self.sum_count
 
-    def var(self):
+    def var(self, sum_start=0):
         return self._sum2 / self.sum_count - self.mean() ** 2
 
-    def std(self):
+    def std(self, sum_start=0):
         return np.sqrt(self.var())
 
     @property
@@ -527,6 +571,9 @@ class HollowBackend(Backend):  # pylint: disable=too-many-ancestors
         else:
             return self._val
 
+    def asarray(self):
+        return self._val
+
 
 #%% Feedbacks
 class Feedback:
@@ -536,8 +583,8 @@ class Feedback:
     def init(self):
         pass
 
-    def show(self, iteration, min_iter, max_iter):
-        print("Iter {} [{}] / {}".format(iteration, min_iter, max_iter))
+    def show(self, iteration, max_iter):
+        print("Iter {} [{}] / {}".format(iteration, max_iter))
 
     def close(self):
         pass
@@ -552,20 +599,19 @@ class Notification(Feedback):
         self.notif = notify2.Notification(self.name, "Iteration ? / ?")
 
     @staticmethod
-    def filled_bar_str(iteration, min_iter, max_iter):
+    def filled_bar_str(iteration, max_iter):
         return "{}{}".format(
             round(iteration / max_iter * 10) * "■",
             (10 - round(iteration / max_iter * 10)) * "□",
         )
 
-    def show(self, iteration, min_iter, max_iter):
+    def show(self, iteration, max_iter):
         self.notif.update(
             self.name,
             "Iteration {} [{}] / {} {}".format(
                 iteration,
-                min_iter,
                 max_iter,
-                Notification.filled_bar_str(iteration, min_iter, max_iter),
+                Notification.filled_bar_str(iteration, max_iter),
             ),
         )
         self.notif.show()
@@ -576,10 +622,10 @@ class Notification(Feedback):
 
 class Bar(Feedback):
     def __init__(self, name=""):
-
         self.name = name
+        self.bar = tqdm.tqdm(desc=self.name, total=1, dynamic_ncols=True)
 
-    def show(self, iteration, min_iter, max_iter):
+    def show(self, iteration, max_iter):
         if hasattr(self, "bar"):
             self.bar.update(n=1)
         else:
@@ -607,15 +653,13 @@ class Figure(Feedback):
         # for axe in self.fig.get_axes():
         #     axe.cla()
 
-    def show(self, iteration, min_iter, max_iter):
+    def show(self, iteration, max_iter):
         for plotter, trace in zip(self.plotters_list, self.traces_list):
             plotter.update(trace)
             if self.stochastic:
                 plotter.update_stoch(trace)
 
-        self.fig.suptitle(
-            "{} : [{}] <= {} / {}".format(self.name, min_iter, iteration, max_iter)
-        )
+        self.fig.suptitle("{} : [{}] <= {} / {}".format(self.name, iteration, max_iter))
 
         if iteration == 1:
             self.fig.tight_layout(rect=[0, 0.05, 1, 0.95])
@@ -628,20 +672,17 @@ class Looper(collections.abc.Iterator):
     def __init__(
         self,
         max_iter,
-        min_iter,
         feedbacks=None,
-        stop_fct=None,
         callback=None,
         speedrun=True,
     ):
         self.max_iter = max_iter
-        self.min_iter = min_iter
-        if self.min_iter > self.max_iter:
-            warnings.warn(
-                "Max iteration ({0}) is lower than min iteration ({1}). "
-                "Max is set to min".format(self.max_iter, self.min_iter)
-            )
-            self.max_iter = self.min_iter
+        # if self.min_iter > self.max_iter:
+        #     warnings.warn(
+        #         "Max iteration ({0}) is lower than min iteration ({1}). "
+        #         "Max is set to min".format(self.max_iter, self.min_iter)
+        #     )
+        #     self.max_iter = self.min_iter
         self.nit = 0
         self.status = 2
         self.message = "Running"
@@ -652,15 +693,10 @@ class Looper(collections.abc.Iterator):
         self.speedrun = speedrun
         self.callback = callback
 
-        if stop_fct is not None:
-            self.stop = stop_fct
-        else:
-            self.stop = lambda: False
-
         if isinstance(feedbacks, collections.Iterable):
             self.feedbacks = feedbacks
         elif feedbacks is None:
-            self.feedbacks = []
+            self.feedbacks = [Bar()]
         else:
             self.feedbacks = [feedbacks]
 
@@ -687,19 +723,20 @@ class Looper(collections.abc.Iterator):
         return self
 
     def __next__(self):
-        if (self.nit >= self.min_iter) and self.stop():
-            for feedback in self.feedbacks:
-                feedback.show(self.nit, self.min_iter, self.max_iter)
-                feedback.close()
-            self.status = 0
-            self.message = "Condition reached"
-            self.succes = True
-            raise StopIteration()
-        elif self.nit < self.max_iter:
+        # if (self.nit >= self.min_iter) and self.stop():
+        #     for feedback in self.feedbacks:
+        #         feedback.show(self.nit, self.min_iter, self.max_iter)
+        #         feedback.close()
+        #     self.status = 0
+        #     self.message = "Condition reached"
+        #     self.succes = True
+        #     raise StopIteration()
+
+        if self.nit < self.max_iter:
             if not self.speedrun:
                 tic = process_time()
                 for feedback in self.feedbacks:
-                    feedback.show(self.nit, self.min_iter, self.max_iter)
+                    feedback.show(self.nit, self.max_iter)
                 self.feedbacks_duration.append(process_time() - tic)
             else:
                 self.feedbacks_duration.append(0)
@@ -707,126 +744,126 @@ class Looper(collections.abc.Iterator):
             self.timestamp.append(process_time())
             self.nit += 1
             return self.nit
-        else:
-            for feedback in self.feedbacks:
-                feedback.close()
-            self.status = 1
-            self.message = "Maximum iteration reached"
-            self.succes = False
-            raise StopIteration()
+
+        for feedback in self.feedbacks:
+            feedback.close()
+        self.status = 1
+        self.message = "Maximum iteration reached"
+        self.succes = False
+        raise StopIteration()
 
     def __repr__(self):
         fb = np.mean(self.feedbacks_duration)
         return (
             "Succes : {}; {}\n".format(self.succes, self.message)
-            + "[{}] <= {} / {}\n".format(self.min_iter, self.nit, self.max_iter)
+            + "<= {} / {}\n".format(self.nit, self.max_iter)
             + "Total time {:.2g} / mean time {:.2g} / FB time {:.2g} ({:.1f}%)".format(
                 self.time[-1], self.mean_time, fb, 100 * fb * (fb + self.mean_time)
             )
         )
 
 
-class IterativeAlg:
-    def __init__(
-        self,
-        max_iter,
-        min_iter,
-        stochastic,
-        threshold=1e-6,
-        speedrun=True,
-        feedbacks=None,
-        trace=HollowTrace,
-        name="",
-    ):
+# class IterativeAlg:
+#     def __init__(
+#         self,
+#         max_iter,
+#         min_iter,
+#         stochastic,
+#         threshold=1e-6,
+#         speedrun=True,
+#         feedbacks=None,
+#         trace=HollowTrace,
+#         name="",
+#     ):
 
-        if isinstance(feedbacks, collections.Iterable):
-            for fb in feedbacks:
-                fb.name = name
-                fb.stochastic = stochastic
-                if isinstance(fb, Figure):
-                    self._figure = fb
-                else:
-                    self._figure = None
-        elif isinstance(feedbacks, Figure):
-            feedbacks.name = name
-            feedbacks.stochastic = stochastic
-            if isinstance(feedbacks, Figure):
-                self._figure = feedbacks
-            else:
-                self._figure = None
+#         if isinstance(feedbacks, collections.Iterable):
+#             for fb in feedbacks:
+#                 fb.name = name
+#                 fb.stochastic = stochastic
+#                 if isinstance(fb, Figure):
+#                     self._figure = fb
+#                 else:
+#                     self._figure = None
+#         elif isinstance(feedbacks, Figure):
+#             feedbacks.name = name
+#             feedbacks.stochastic = stochastic
+#             if isinstance(feedbacks, Figure):
+#                 self._figure = feedbacks
+#             else:
+#                 self._figure = None
 
-        self.looper = Looper(max_iter, min_iter, speedrun=speedrun, feedbacks=feedbacks)
+#         self.looper = Looper(max_iter, min_iter, speedrun=speedrun, feedbacks=feedbacks)
 
-        self.stochastic = stochastic
-        self.threshold = threshold
-        self.name = name
-        self._trace = trace
+#         self.stochastic = stochastic
+#         self.threshold = threshold
+#         self.name = name
+#         self._trace = trace
 
-    @property
-    def max_iter(self):
-        return self.looper.max_iter
+#     @property
+#     def max_iter(self):
+#         return self.looper.max_iter
 
-    @property
-    def min_iter(self):
-        return self.looper.min_iter
+#     @property
+#     def min_iter(self):
+#         return self.looper.min_iter
 
-    def stop(self, obj):
-        if self.stochastic:
-            if obj.mean_delta < self.threshold:
-                return True
-            else:
-                return False
-        else:
-            if obj.delta < self.threshold:
-                return True
-            else:
-                return False
+#     def stop(self, obj):
+#         if self.stochastic:
+#             if obj.mean_delta < self.threshold:
+#                 return True
+#             else:
+#                 return False
+#         else:
+#             if obj.delta < self.threshold:
+#                 return True
+#             else:
+#                 return False
 
-    def fig_register_trace(self, *args):
-        if hasattr(self, "_figure"):
-            axes = self._figure.fig.get_axes()
-            self._figure.traces_list = args
-            for axe, trace in zip(axes, args):
-                if trace.ndim == 0:
-                    self._figure.plotters_list.append(
-                        MplScalarTracePlot(axe, trace.name)
-                    )
-                elif trace.ndim == 1:
-                    self._figure.plotters_list.append(Mpl1DTracePlot(axe, trace.name))
-                elif trace.ndim == 2:
-                    self._figure.plotters_list.append(Mpl2DTracePlot(axe, trace.name))
-                else:
-                    print("Trace DataType not supported for plotting")
+#     def fig_register_trace(self, *args):
+#         if hasattr(self, "_figure"):
+#             axes = self._figure.fig.get_axes()
+#             self._figure.traces_list = args
+#             for axe, trace in zip(axes, args):
+#                 if trace.ndim == 0:
+#                     self._figure.plotters_list.append(
+#                         MplScalarTracePlot(axe, trace.name)
+#                     )
+#                 elif trace.ndim == 1:
+#                     self._figure.plotters_list.append(Mpl1DTracePlot(axe, trace.name))
+#                 elif trace.ndim == 2:
+#                     self._figure.plotters_list.append(Mpl2DTracePlot(axe, trace.name))
+#                 else:
+#                     print("Trace DataType not supported for plotting")
 
-    def watch_for_stop(self, trace):
-        self.looper.stop = functools.partial(self.stop, trace)
+#     def watch_for_stop(self, trace):
+#         self.looper.stop = functools.partial(self.stop, trace)
 
 
-class IterRes:
-    def __init__(self, looper, **kwargs):
-        self.looper = looper
-        for key in kwargs:
-            setattr(self, key, kwargs[key])
-        self.status = looper.status
-        self.message = looper.message
-        self.succes = looper.succes
-        self.nit = self.looper.nit
-        self.max_iter = looper.max_iter
-        self.min_iter = looper.min_iter
-        self.time = list(looper.time)
-        self.mean_time = looper.mean_time
-        self.fb_time = np.mean(looper.feedbacks_duration)
-        self.fun = 0
-        self.jac = 0
-        self.hess = 0
-        self.hess_inv = 0
-        self.nfev = 0
-        self.njev = 0
-        self.maxcv = 0
+# class IterRes:
+#     def __init__(self, looper, **kwargs):
+#         self.looper = looper
+#         for key in kwargs:
+#             setattr(self, key, kwargs[key])
+#         self.status = looper.status
+#         self.message = looper.message
+#         self.succes = looper.succes
+#         self.nit = self.looper.nit
+#         self.max_iter = looper.max_iter
+#         self.min_iter = looper.min_iter
+#         self.time = list(looper.time)
+#         self.mean_time = looper.mean_time
+#         self.fb_time = np.mean(looper.feedbacks_duration)
+#         self.fun = 0
+#         self.jac = 0
+#         self.hess = 0
+#         self.hess_inv = 0
+#         self.nfev = 0
+#         self.njev = 0
+#         self.maxcv = 0
 
-    @property
-    def x(self):
-        return self.minimizer
+#     @property
+#     def x(self):
+#         return self.minimizer
 
-    def __repr__(self):
-        return self.looper.__repr__()
+#     def __repr__(self):
+#         return self.looper.__repr__()
